@@ -33,8 +33,10 @@ def grid(w: int = 640, h: int = 480) -> np.ndarray:
         | (y == 0)
         | (y == h - 1)
     )
-    img = np.where(white, 0x3F, 0x10).astype(np.uint8)
-    return np.broadcast_to(img, (h, w)).copy()
+    # `white` is already (h, w) -- x (1, w) and y (h, 1) broadcast against
+    # each other in the OR expression above -- so np.where needs no further
+    # broadcasting.
+    return np.where(white, 0x3F, 0x10).astype(np.uint8)
 
 
 def to_rgb(img6: np.ndarray) -> np.ndarray:

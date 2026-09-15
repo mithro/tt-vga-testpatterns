@@ -6,15 +6,26 @@ design's reference render, pixel-exactly.
     uv run tools/check.py tt_um_vgacal_bars
     uv run tools/check.py tt_um_vgacal_bars --frames 3
 
+--frames N simulates N frames' worth of clocks (plus a small margin) and
+checks the *last* frame vgacap-frames reconstructs from that capture.
+vgacap's timing learner needs to see three vsync entries before it can
+reconstruct a full, non-partial frame, so N must be >= 3 (N=3 reconstructs
+exactly one full frame; larger N is only useful to check that steady-state
+frames past the first also come out pixel-exact).
+
 VGACAP (the vgacap checkout, with a build already at <VGACAP>/build and the
-Python package at <VGACAP>/python) defaults to ../vgacap relative to the
-repo root; override with the VGACAP environment variable.
+Python package at <VGACAP>/python -- both are required) defaults to
+../vgacap relative to the repo root; override with the VGACAP environment
+variable if that checkout lives somewhere else, e.g.:
+
+    VGACAP=/path/to/vgacap uv run tools/check.py tt_um_vgacal_bars
 """
 from __future__ import annotations
 
 import argparse
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -90,7 +101,13 @@ def run_vgacap_frames(vgacap: pathlib.Path, stream_path: pathlib.Path, out_prefi
     binary = vgacap / "build" / "vgacap-frames"
     if not binary.exists():
         raise FileNotFoundError(f"vgacap-frames not found at {binary} (build vgacap first)")
-    out_prefix.parent.mkdir(parents=True, exist_ok=True)
+    # Clear any frames left over from a previous run: vgacap-frames only
+    # ever adds -NNNN.ppm files, so a run that reconstructs fewer frames
+    # than the previous one would otherwise leave a stale, higher-numbered
+    # PPM behind for last_frame_ppm() to pick up.
+    if out_prefix.parent.exists():
+        shutil.rmtree(out_prefix.parent)
+    out_prefix.parent.mkdir(parents=True)
     cmd = [str(binary), str(stream_path), str(out_prefix)]
     print("+", " ".join(cmd))
     result = subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -111,6 +128,19 @@ def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
     if design not in REFERENCE_RENDERS:
         print(f"no reference render registered for {design!r}", file=sys.stderr)
         return False
+    if not (vgacap / "build").is_dir() or not (vgacap / "python").is_dir():
+        print(
+            f"FAIL VGACAP ({vgacap}) needs a build/ (built vgacap-frames) and a "
+            f"python/ (the vgacap package); override with the VGACAP environment "
+            f"variable if vgacap lives somewhere other than ../vgacap"
+        )
+        return False
+    if frames < 3:
+        print(
+            f"FAIL --frames must be >= 3 (vgacap's timing learner needs three "
+            f"vsync entries to reconstruct a full frame; got --frames {frames})"
+        )
+        return False
 
     work_dir = REPO_ROOT / "tmp" / "check" / design
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -120,9 +150,17 @@ def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
     dump_to_stream(dump_path, stream_path, desc=f"iverilog {design}", vgacap=vgacap)
 
     out_prefix = work_dir / "frames" / design
-    run_vgacap_frames(vgacap, stream_path, out_prefix)
+    try:
+        run_vgacap_frames(vgacap, stream_path, out_prefix)
+    except subprocess.CalledProcessError as e:
+        print(f"FAIL vgacap-frames exited {e.returncode}")
+        return False
 
-    ppm_path = last_frame_ppm(out_prefix)
+    try:
+        ppm_path = last_frame_ppm(out_prefix)
+    except FileNotFoundError as e:
+        print(f"FAIL {e}")
+        return False
     sys.path.insert(0, str(vgacap / "python"))
     from vgacap.ppm import read_ppm  # noqa: E402 (deferred: needs VGACAP on sys.path)
 
