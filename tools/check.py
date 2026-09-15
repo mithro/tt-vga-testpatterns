@@ -13,6 +13,15 @@ reconstruct a full, non-partial frame, so N must be >= 3 (N=3 reconstructs
 exactly one full frame; larger N is only useful to check that steady-state
 frames past the first also come out pixel-exact).
 
+If --frames is omitted, the default depends on the design (see
+DEFAULT_FRAMES below): 3 for designs that draw the same picture every
+frame (bars/grid), but 5 for the frame-counter designs (counter/prbs) --
+N=3 only ever reconstructs a single frame, which would never exercise
+those designs' consecutive-counter assertion (see check()'s
+MIN_FRAME_COUNTER_FRAMES check, which FAILs outright if fewer than 2
+frames come out). This is also what the top-level Makefile's generic
+`check-%` target relies on, since it never passes --frames itself.
+
 VGACAP (the vgacap checkout, with a build already at <VGACAP>/build and the
 Python package at <VGACAP>/python -- both are required) defaults to
 ../vgacap relative to the repo root; override with the VGACAP environment
@@ -41,11 +50,86 @@ H_TOTAL = 800
 V_TOTAL = 525
 
 # Design name -> reference renderer (returns a (h, w) uint8 array of 6-bit
-# Tiny VGA colour values).
+# Tiny VGA colour values). These designs draw the same picture every frame,
+# so only the last reconstructed frame is checked.
 REFERENCE_RENDERS = {
     "tt_um_vgacal_bars": render.bars,
     "tt_um_vgacal_grid": render.grid,
 }
+
+# Design name -> reference renderer that takes the design's own 8-bit frame
+# counter (render.counter/render.prbs). These designs draw a different
+# picture each frame *and* draw that frame counter into the picture itself
+# (top-left block row), so every reconstructed frame is checked individually:
+# the frame counter is decoded from the reconstructed picture (see
+# decode_frame_counter/FRAME_COUNTER_ROW below) and the reference is
+# rendered for that same counter value before diffing.
+FRAME_COUNTER_RENDERS = {
+    "tt_um_vgacal_counter": render.counter,
+    "tt_um_vgacal_prbs": render.prbs,
+}
+
+# Row (within the reconstructed 480-line frame) of the 8-block frame-counter
+# strip each frame-counter design draws, sampled at the middle of each
+# block's column (x = 40 + 80*i for block i).
+FRAME_COUNTER_ROW = {
+    "tt_um_vgacal_counter": 30,  # middle of the 80x60 block row (y in [0, 60))
+    "tt_um_vgacal_prbs": 4,      # middle of the 80x8 block row (y in [0, 8))
+}
+
+# Default --frames per design, used whenever the caller doesn't pass an
+# explicit --frames (in particular by the top-level Makefile's generic
+# `check-%` target). --frames 3 is the minimum vgacap's timing learner
+# needs to reconstruct a single full frame, which is enough for the
+# same-picture-every-frame designs (bars/grid), but the whole point of the
+# frame-counter designs (counter/prbs) is to prove *consecutive*
+# reconstructed frames carry consecutive counters -- an assertion that is
+# vacuous (never executed) with only one reconstructed frame. Default those
+# two to 5, which reconstructs 3 frames (see MIN_FRAME_COUNTER_FRAMES
+# below), so the default `make check` run actually exercises it.
+DEFAULT_FRAMES = {
+    "tt_um_vgacal_counter": 5,
+    "tt_um_vgacal_prbs": 5,
+}
+DEFAULT_FRAMES_FALLBACK = 3
+
+# A frame-counter design's check is only meaningful if it reconstructs at
+# least two frames (otherwise the consecutive-counter assertion never
+# runs): check() FAILs outright if fewer are reconstructed, rather than
+# silently passing a single-frame check as if it had proven the guarantee.
+MIN_FRAME_COUNTER_FRAMES = 2
+
+
+def rgb_to_img6(rgb: np.ndarray) -> np.ndarray:
+    """Inverse of render.to_rgb: reconstruct the 6-bit (rr gg bb) image from
+    an (h, w, 3) RGB24 array whose channel values are each one of the four
+    to_rgb levels (0, 85, 170, 255). Relies on those being exact multiples
+    of 85, so integer division recovers the 2-bit level exactly."""
+    lvl = (rgb.astype(np.uint16) // 85).astype(np.uint8)
+    r, g, b = lvl[..., 0], lvl[..., 1], lvl[..., 2]
+    return ((r << 4) | (g << 2) | b).astype(np.uint8)
+
+
+def decode_frame_counter(img6: np.ndarray, row: int) -> int:
+    """Decode a design's 8-bit frame counter from its own reconstructed
+    picture: 8 blocks at (x = 40 + 80*i, y = row) for i in 0..7, white
+    (0x3F) = bit set, blue (0x03) = bit clear, block 0 = most-significant
+    bit -- see FRAME_COUNTER_RENDERS designs' docs/info.md."""
+    value = 0
+    for i in range(8):
+        x = 40 + 80 * i
+        px = int(img6[row, x])
+        if px == 0x3F:
+            bit = 1
+        elif px == 0x03:
+            bit = 0
+        else:
+            raise ValueError(
+                f"unexpected frame-counter block pixel {px:#04x} at (x={x}, y={row}) "
+                f"-- expected 0x3f (white) or 0x03 (blue)"
+            )
+        value = (value << 1) | bit
+    return value
 
 
 def vgacap_dir() -> pathlib.Path:
@@ -117,15 +201,20 @@ def run_vgacap_frames(vgacap: pathlib.Path, stream_path: pathlib.Path, out_prefi
     return result.stdout
 
 
-def last_frame_ppm(out_prefix: pathlib.Path) -> pathlib.Path:
+def all_frame_ppms(out_prefix: pathlib.Path) -> list[pathlib.Path]:
     ppms = sorted(out_prefix.parent.glob(f"{out_prefix.name}-*.ppm"))
     if not ppms:
         raise FileNotFoundError(f"no frames written to {out_prefix}-NNNN.ppm")
-    return ppms[-1]
+    return ppms
+
+
+def last_frame_ppm(out_prefix: pathlib.Path) -> pathlib.Path:
+    return all_frame_ppms(out_prefix)[-1]
 
 
 def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
-    if design not in REFERENCE_RENDERS:
+    frame_counter_render = FRAME_COUNTER_RENDERS.get(design)
+    if design not in REFERENCE_RENDERS and frame_counter_render is None:
         print(f"no reference render registered for {design!r}", file=sys.stderr)
         return False
     if not (vgacap / "build").is_dir() or not (vgacap / "python").is_dir():
@@ -156,13 +245,74 @@ def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
         print(f"FAIL vgacap-frames exited {e.returncode}")
         return False
 
+    sys.path.insert(0, str(vgacap / "python"))
+    from vgacap.ppm import read_ppm  # noqa: E402 (deferred: needs VGACAP on sys.path)
+
+    if frame_counter_render is not None:
+        # A different picture every frame, with the frame counter drawn
+        # into the picture itself: check every reconstructed frame
+        # individually, mapping each one to the counter value decoded from
+        # its own top-left block row (see decode_frame_counter), and assert
+        # consecutive reconstructed frames carry consecutive counters (no
+        # frame dropped or duplicated by the capture/reconstruction path).
+        try:
+            ppm_paths = all_frame_ppms(out_prefix)
+        except FileNotFoundError as e:
+            print(f"FAIL {e}")
+            return False
+        if len(ppm_paths) < MIN_FRAME_COUNTER_FRAMES:
+            print(
+                f"FAIL only {len(ppm_paths)} frame(s) reconstructed, need >= "
+                f"{MIN_FRAME_COUNTER_FRAMES} to exercise the consecutive-counter "
+                f"assertion (pass a larger --frames)"
+            )
+            return False
+
+        row = FRAME_COUNTER_ROW[design]
+        prev_counter: int | None = None
+        counters: list[int] = []
+        for ppm_path in ppm_paths:
+            got_rgb = read_ppm(ppm_path)
+            img6 = rgb_to_img6(got_rgb)
+            try:
+                counter_val = decode_frame_counter(img6, row)
+            except ValueError as e:
+                print(f"FAIL {ppm_path.name}: {e}")
+                return False
+
+            if prev_counter is not None:
+                expected = (prev_counter + 1) & 0xFF
+                if counter_val != expected:
+                    print(
+                        f"FAIL {ppm_path.name}: frame counter {counter_val} is not "
+                        f"consecutive after {prev_counter} (expected {expected}) -- "
+                        f"a frame was dropped or duplicated"
+                    )
+                    return False
+            prev_counter = counter_val
+            counters.append(counter_val)
+
+            want6 = frame_counter_render(counter_val)
+            want_rgb = render.to_rgb(want6)
+            if got_rgb.shape != want_rgb.shape:
+                print(
+                    f"FAIL {ppm_path.name}: shape mismatch: got {got_rgb.shape}, "
+                    f"want {want_rgb.shape}"
+                )
+                return False
+            mismatch = int(np.any(got_rgb != want_rgb, axis=-1).sum())
+            if mismatch:
+                print(f"FAIL {ppm_path.name}: counter={counter_val}: {mismatch} mismatching pixels")
+                return False
+
+        print(f"PASS ({len(counters)} frames, counters {counters})")
+        return True
+
     try:
         ppm_path = last_frame_ppm(out_prefix)
     except FileNotFoundError as e:
         print(f"FAIL {e}")
         return False
-    sys.path.insert(0, str(vgacap / "python"))
-    from vgacap.ppm import read_ppm  # noqa: E402 (deferred: needs VGACAP on sys.path)
 
     got_rgb = read_ppm(ppm_path)
     want6 = REFERENCE_RENDERS[design]()
@@ -183,11 +333,17 @@ def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("design")
-    ap.add_argument("--frames", type=int, default=3)
+    # No fixed default: a design's default depends on what its check needs
+    # to actually exercise (see DEFAULT_FRAMES) -- resolved below once the
+    # design name is known, so the top-level Makefile's `check-%` target
+    # (which never passes --frames) gets the right default per design.
+    ap.add_argument("--frames", type=int, default=None)
     a = ap.parse_args(argv)
 
+    frames = a.frames if a.frames is not None else DEFAULT_FRAMES.get(a.design, DEFAULT_FRAMES_FALLBACK)
+
     vgacap = vgacap_dir()
-    ok = check(a.design, a.frames, vgacap)
+    ok = check(a.design, frames, vgacap)
     return 0 if ok else 1
 
 
