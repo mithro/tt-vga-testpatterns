@@ -13,6 +13,15 @@ reconstruct a full, non-partial frame, so N must be >= 3 (N=3 reconstructs
 exactly one full frame; larger N is only useful to check that steady-state
 frames past the first also come out pixel-exact).
 
+If --frames is omitted, the default depends on the design (see
+DEFAULT_FRAMES below): 3 for designs that draw the same picture every
+frame (bars/grid), but 5 for the frame-counter designs (counter/prbs) --
+N=3 only ever reconstructs a single frame, which would never exercise
+those designs' consecutive-counter assertion (see check()'s
+MIN_FRAME_COUNTER_FRAMES check, which FAILs outright if fewer than 2
+frames come out). This is also what the top-level Makefile's generic
+`check-%` target relies on, since it never passes --frames itself.
+
 VGACAP (the vgacap checkout, with a build already at <VGACAP>/build and the
 Python package at <VGACAP>/python -- both are required) defaults to
 ../vgacap relative to the repo root; override with the VGACAP environment
@@ -67,6 +76,28 @@ FRAME_COUNTER_ROW = {
     "tt_um_vgacal_counter": 30,  # middle of the 80x60 block row (y in [0, 60))
     "tt_um_vgacal_prbs": 4,      # middle of the 80x8 block row (y in [0, 8))
 }
+
+# Default --frames per design, used whenever the caller doesn't pass an
+# explicit --frames (in particular by the top-level Makefile's generic
+# `check-%` target). --frames 3 is the minimum vgacap's timing learner
+# needs to reconstruct a single full frame, which is enough for the
+# same-picture-every-frame designs (bars/grid), but the whole point of the
+# frame-counter designs (counter/prbs) is to prove *consecutive*
+# reconstructed frames carry consecutive counters -- an assertion that is
+# vacuous (never executed) with only one reconstructed frame. Default those
+# two to 5, which reconstructs 3 frames (see MIN_FRAME_COUNTER_FRAMES
+# below), so the default `make check` run actually exercises it.
+DEFAULT_FRAMES = {
+    "tt_um_vgacal_counter": 5,
+    "tt_um_vgacal_prbs": 5,
+}
+DEFAULT_FRAMES_FALLBACK = 3
+
+# A frame-counter design's check is only meaningful if it reconstructs at
+# least two frames (otherwise the consecutive-counter assertion never
+# runs): check() FAILs outright if fewer are reconstructed, rather than
+# silently passing a single-frame check as if it had proven the guarantee.
+MIN_FRAME_COUNTER_FRAMES = 2
 
 
 def rgb_to_img6(rgb: np.ndarray) -> np.ndarray:
@@ -229,6 +260,13 @@ def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
         except FileNotFoundError as e:
             print(f"FAIL {e}")
             return False
+        if len(ppm_paths) < MIN_FRAME_COUNTER_FRAMES:
+            print(
+                f"FAIL only {len(ppm_paths)} frame(s) reconstructed, need >= "
+                f"{MIN_FRAME_COUNTER_FRAMES} to exercise the consecutive-counter "
+                f"assertion (pass a larger --frames)"
+            )
+            return False
 
         row = FRAME_COUNTER_ROW[design]
         prev_counter: int | None = None
@@ -295,11 +333,17 @@ def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("design")
-    ap.add_argument("--frames", type=int, default=3)
+    # No fixed default: a design's default depends on what its check needs
+    # to actually exercise (see DEFAULT_FRAMES) -- resolved below once the
+    # design name is known, so the top-level Makefile's `check-%` target
+    # (which never passes --frames) gets the right default per design.
+    ap.add_argument("--frames", type=int, default=None)
     a = ap.parse_args(argv)
 
+    frames = a.frames if a.frames is not None else DEFAULT_FRAMES.get(a.design, DEFAULT_FRAMES_FALLBACK)
+
     vgacap = vgacap_dir()
-    ok = check(a.design, a.frames, vgacap)
+    ok = check(a.design, frames, vgacap)
     return 0 if ok else 1
 
 
