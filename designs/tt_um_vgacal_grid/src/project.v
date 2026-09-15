@@ -34,36 +34,20 @@ module tt_um_vgacal_grid (
       .display_on(display_on)
   );
 
-  // vgacap's frame reconstruction crops the active window one line later
-  // than hvsync_generator's own vpos (verified empirically against
-  // tools/render.py via tools/check.py: the reconstructed picture's row r
-  // is this design's line vpos=r+1, not vpos=r). vpos_for_color corrects
-  // for that one-line difference so the *captured* picture lines up with
-  // vpos=0..479 exactly; real-monitor viewers are unaffected in practice,
-  // since the shift only touches the line at the edge of the front porch.
-  wire [9:0] vpos_for_color = (vpos == 10'd0) ? 10'd524 : (vpos - 10'd1);
-  wire       color_active = (hpos < 10'd640) && (vpos_for_color < 10'd480);
-
-  wire border   = (hpos == 10'd0) || (hpos == 10'd639) || (vpos_for_color == 10'd0) || (vpos_for_color == 10'd479);
-  wire grid     = (hpos[2:0] == 3'b000) || (vpos_for_color[2:0] == 3'b000);
+  // hpos==0 and vpos==0 are already covered by grid (0 % 8 == 0), so border
+  // only needs to add the two edges the 8-pixel grid never lands on:
+  // hpos==639 and vpos==479.
+  wire border   = (hpos == 10'd639) || (vpos == 10'd479);
+  wire grid     = (hpos[2:0] == 3'b000) || (vpos[2:0] == 3'b000);
   wire white    = border || grid;
 
   // Colour index is a 6-bit value, bits [5:0] = rr gg bb, which is exactly
   // the layout the Tiny VGA PMOD wants -- no further expansion needed.
+  // Combinational from hpos/vpos, blanked by display_on: hvsync_generator's
+  // sync pulses are phase-corrected (see its header comment) so this lines
+  // up with hsync/vsync exactly, with no per-design correction needed.
   wire [5:0] pixel_index = white ? 6'h3F : 6'h10;
-  wire [5:0] next_color = color_active ? pixel_index : 6'h00;
-
-  // hsync/vsync are registered by hvsync_generator, so they reflect hpos as
-  // of the *previous* cycle (see common/hvsync_generator.v). Colour must be
-  // registered the same way -- one clock behind the hpos/vpos used to
-  // compute it -- so that hsync/vsync and colour stay in step; a
-  // combinational colour (colour output the same cycle as the hpos it was
-  // computed from) is one pixel ahead of sync and reconstructs shifted.
-  reg [5:0] color;
-  always @(posedge clk) begin
-    if (!rst_n) color <= 6'h00;
-    else color <= next_color;
-  end
+  wire [5:0] color = display_on ? pixel_index : 6'h00;
 
   // Tiny VGA PMOD: {HSync, B0, G0, R0, VSync, B1, G1, R1}.
   // color[5:0] is rr gg bb, so color[5]=R1, color[4]=R0, color[3]=G1,
@@ -72,8 +56,7 @@ module tt_um_vgacal_grid (
   assign uio_out = 8'h00;
   assign uio_oe  = 8'h00;
 
-  // avoid linter warnings about unused pins/signals (display_on is not used:
-  // blanking for colour purposes is handled by color_active above):
-  wire _unused = &{ena, ui_in, uio_in, display_on, 1'b0};
+  // avoid linter warnings about unused pins:
+  wire _unused = &{ena, ui_in, uio_in, 1'b0};
 
 endmodule
