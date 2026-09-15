@@ -5,6 +5,13 @@ design's reference render, pixel-exactly.
 
     uv run tools/check.py tt_um_vgacal_bars
     uv run tools/check.py tt_um_vgacal_bars --frames 3
+    uv run tools/check.py tt_um_vgacal_modes --ui-in 2
+
+tt_um_vgacal_modes is checked once per ui_in sub-case (see MODE_CASES): the
+three timings plus the two polarity inversions on mode 0, each asserting
+what vgacap-frames reports about the frame (mode name, clocks per line,
+lines per frame, both sync polarities) as well as diffing the picture.
+Without --ui-in all five sub-cases run, which is what `make check` does.
 
 --frames N simulates N frames' worth of clocks (plus a small margin) and
 checks the *last* frame vgacap-frames reconstructs from that capture.
@@ -34,6 +41,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -93,6 +101,39 @@ DEFAULT_FRAMES = {
 }
 DEFAULT_FRAMES_FALLBACK = 3
 
+# Designs whose picture *and* timing depend on ui_in: each is checked once
+# per sub-case below, driving ui_in through tools/dump_uo_out.py --ui-in, and
+# each sub-case asserts the whole line vgacap-frames prints about the frame
+# (mode name, clocks per line, lines per frame, both sync polarities) on top
+# of the usual pixel-exact picture diff.
+#
+# The five sub-cases are the three modes plus the two polarity inversions on
+# mode 0. Inverting a polarity does not move the sync pulses or change their
+# width, so vgacap still identifies the mode from (cpl, lpf) and reconstructs
+# the identical picture -- only the reported polarity flips, which is exactly
+# what makes these two cases worth checking separately.
+#
+# Fields: ui_in, mode name vgacap should report, clocks per line, lines per
+# frame, hsync polarity, vsync polarity ("pos"/"neg" as vgacap-frames prints
+# them). The renderer is render.modes(ui_in), which takes the mode from
+# ui_in[1:0] (the picture does not depend on the polarity bits).
+MODE_CASES = {
+    "tt_um_vgacal_modes": [
+        (0x0, "640x480@60", 800, 525, "neg", "neg"),
+        (0x1, "800x600@60", 1056, 628, "pos", "pos"),
+        (0x2, "720x400@70", 900, 449, "neg", "pos"),
+        (0x4, "640x480@60", 800, 525, "pos", "neg"),  # mode 0, hsync inverted
+        (0x8, "640x480@60", 800, 525, "neg", "pos"),  # mode 0, vsync inverted
+    ],
+}
+
+# "frame 0: 640x480 mode=640x480@60 cpl=800 lpf=525 hsync=neg vsync=neg partial=0"
+FRAME_LINE_RE = re.compile(
+    r"^frame (?P<index>\d+): (?P<w>\d+)x(?P<h>\d+) mode=(?P<mode>\S+) "
+    r"cpl=(?P<cpl>\d+) lpf=(?P<lpf>\d+) hsync=(?P<hsync>\S+) vsync=(?P<vsync>\S+) "
+    r"partial=(?P<partial>\d+)$"
+)
+
 # A frame-counter design's check is only meaningful if it reconstructs at
 # least two frames (otherwise the consecutive-counter assertion never
 # runs): check() FAILs outright if fewer are reconstructed, rather than
@@ -144,11 +185,18 @@ def design_sources(design: str) -> list[pathlib.Path]:
     return sources
 
 
-def run_dump(design: str, frames: int, out_dir: pathlib.Path) -> pathlib.Path:
+def run_dump(
+    design: str,
+    frames: int,
+    out_dir: pathlib.Path,
+    ui_in: int = 0,
+    h_total: int = H_TOTAL,
+    v_total: int = V_TOTAL,
+) -> pathlib.Path:
     # A few lines of margin beyond whole frames so vgaframe has enough
     # trailing samples to close out the last frame's last line.
-    margin_clocks = 5 * H_TOTAL
-    clocks = frames * H_TOTAL * V_TOTAL + margin_clocks
+    margin_clocks = 5 * h_total
+    clocks = frames * h_total * v_total + margin_clocks
     # tb_dump_uo_out.v stores +out= in a reg [1023:0] (128 chars): pass a
     # short relative filename (cwd=out_dir) rather than an absolute path,
     # since a worktree checkout can put the repo root deep enough that an
@@ -160,6 +208,7 @@ def run_dump(design: str, frames: int, out_dir: pathlib.Path) -> pathlib.Path:
         "--top", design,
         "--out", dump_name,
         "--clocks", str(clocks),
+        "--ui-in", str(ui_in),
         "--build-dir", "sim",
         *[str(p) for p in design_sources(design)],
     ]
@@ -212,9 +261,106 @@ def last_frame_ppm(out_prefix: pathlib.Path) -> pathlib.Path:
     return all_frame_ppms(out_prefix)[-1]
 
 
-def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
+def parse_frame_lines(stdout: str) -> list[dict[str, str]]:
+    """The per-frame summary lines vgacap-frames prints on stdout, as dicts
+    (see FRAME_LINE_RE). Anything else on stdout is ignored."""
+    return [m.groupdict() for m in map(FRAME_LINE_RE.match, stdout.splitlines()) if m]
+
+
+def check_mode_case(
+    design: str, case: tuple, frames: int, vgacap: pathlib.Path, read_ppm
+) -> bool:
+    """One (ui_in, expected reported timing) sub-case of a MODE_CASES design:
+    simulate with that ui_in, reconstruct, and check both what
+    vgacap-frames *reports* about the frame (mode/cpl/lpf/polarities) and
+    the reconstructed picture, pixel-exactly, against render.modes(ui_in)."""
+    ui_in, mode_name, cpl, lpf, hsync, vsync = case
+    label = f"ui_in={ui_in:#04x} ({mode_name} hsync={hsync} vsync={vsync})"
+    print(f"--- {design}: {label}")
+
+    work_dir = REPO_ROOT / "tmp" / "check" / design / f"ui_in_{ui_in:02x}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    dump_path = run_dump(design, frames, work_dir, ui_in=ui_in, h_total=cpl, v_total=lpf)
+    stream_path = work_dir / f"{design}.vgacap"
+    dump_to_stream(dump_path, stream_path, desc=f"iverilog {design} ui_in={ui_in}", vgacap=vgacap)
+
+    out_prefix = work_dir / "frames" / design
+    try:
+        stdout = run_vgacap_frames(vgacap, stream_path, out_prefix)
+    except subprocess.CalledProcessError as e:
+        print(f"FAIL {label}: vgacap-frames exited {e.returncode}")
+        return False
+
+    lines = parse_frame_lines(stdout)
+    if not lines:
+        print(f"FAIL {label}: vgacap-frames reported no frames")
+        return False
+    # The last reported frame corresponds to the last PPM checked below.
+    got = lines[-1]
+    want = {
+        "mode": mode_name,
+        "cpl": str(cpl),
+        "lpf": str(lpf),
+        "hsync": hsync,
+        "vsync": vsync,
+        "partial": "0",
+    }
+    wrong = {k: (got[k], v) for k, v in want.items() if got[k] != v}
+    if wrong:
+        detail = ", ".join(f"{k}: got {g}, want {w}" for k, (g, w) in sorted(wrong.items()))
+        print(f"FAIL {label}: vgacap-frames reported {detail}")
+        return False
+
+    try:
+        ppm_path = last_frame_ppm(out_prefix)
+    except FileNotFoundError as e:
+        print(f"FAIL {label}: {e}")
+        return False
+
+    got_rgb = read_ppm(ppm_path)
+    want_rgb = render.to_rgb(render.modes(ui_in))
+    if got_rgb.shape != want_rgb.shape:
+        print(f"FAIL {label}: shape mismatch: got {got_rgb.shape}, want {want_rgb.shape}")
+        return False
+    mismatch = int(np.any(got_rgb != want_rgb, axis=-1).sum())
+    if mismatch:
+        print(f"FAIL {label}: {mismatch} mismatching pixels")
+        return False
+
+    print(f"PASS {label}")
+    return True
+
+
+def check_modes(
+    design: str, frames: int, vgacap: pathlib.Path, only_ui_in: int | None = None
+) -> bool:
+    """Every MODE_CASES sub-case of `design` (or just the one whose ui_in is
+    `only_ui_in`). All sub-cases are run even if an early one fails, so one
+    run reports every broken mode rather than only the first."""
+    sys.path.insert(0, str(vgacap / "python"))
+    from vgacap.ppm import read_ppm  # noqa: E402 (deferred: needs VGACAP on sys.path)
+
+    cases = MODE_CASES[design]
+    if only_ui_in is not None:
+        cases = [c for c in cases if c[0] == only_ui_in]
+        if not cases:
+            known = ", ".join(f"{c[0]:#04x}" for c in MODE_CASES[design])
+            print(f"FAIL no --ui-in {only_ui_in:#04x} sub-case for {design} (have {known})")
+            return False
+
+    results = [check_mode_case(design, case, frames, vgacap, read_ppm) for case in cases]
+    failed = len(results) - sum(results)
+    if failed:
+        print(f"FAIL {failed}/{len(results)} sub-cases failed")
+        return False
+    print(f"PASS ({len(results)} sub-cases)")
+    return True
+
+
+def check(design: str, frames: int, vgacap: pathlib.Path, ui_in: int | None = None) -> bool:
     frame_counter_render = FRAME_COUNTER_RENDERS.get(design)
-    if design not in REFERENCE_RENDERS and frame_counter_render is None:
+    if design not in REFERENCE_RENDERS and frame_counter_render is None and design not in MODE_CASES:
         print(f"no reference render registered for {design!r}", file=sys.stderr)
         return False
     if not (vgacap / "build").is_dir() or not (vgacap / "python").is_dir():
@@ -229,6 +375,14 @@ def check(design: str, frames: int, vgacap: pathlib.Path) -> bool:
             f"FAIL --frames must be >= 3 (vgacap's timing learner needs three "
             f"vsync entries to reconstruct a full frame; got --frames {frames})"
         )
+        return False
+
+    if design in MODE_CASES:
+        # Timing and picture both depend on ui_in: run each sub-case in its
+        # own work directory (see check_modes).
+        return check_modes(design, frames, vgacap, only_ui_in=ui_in)
+    if ui_in is not None:
+        print(f"FAIL --ui-in is only meaningful for {', '.join(sorted(MODE_CASES))}")
         return False
 
     work_dir = REPO_ROOT / "tmp" / "check" / design
@@ -338,12 +492,16 @@ def main(argv: list[str] | None = None) -> int:
     # design name is known, so the top-level Makefile's `check-%` target
     # (which never passes --frames) gets the right default per design.
     ap.add_argument("--frames", type=int, default=None)
+    # Only for a MODE_CASES design (tt_um_vgacal_modes): run just the one
+    # sub-case with this ui_in instead of all of them. Without it every
+    # sub-case runs, which is what `make check` relies on.
+    ap.add_argument("--ui-in", type=lambda s: int(s, 0), default=None)
     a = ap.parse_args(argv)
 
     frames = a.frames if a.frames is not None else DEFAULT_FRAMES.get(a.design, DEFAULT_FRAMES_FALLBACK)
 
     vgacap = vgacap_dir()
-    ok = check(a.design, frames, vgacap)
+    ok = check(a.design, frames, vgacap, ui_in=a.ui_in)
     return 0 if ok else 1
 
 
