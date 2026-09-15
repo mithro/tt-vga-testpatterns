@@ -17,6 +17,8 @@ sim: $(addprefix sim-,$(DESIGNS))
 sim-%:
 	uv run make -C designs/$*/test
 
+# Needs a sibling `vgacap` checkout built at ../vgacap/build (VGACAP env var
+# overrides the location); see README.md.
 check: $(addprefix check-,$(DESIGNS))
 
 check-%:

@@ -23,6 +23,24 @@ The capture pipeline they validate lives in
 | `tt_um_vgacal_modes` | `ui_in` selects timing (640x480, 800x600, 720x400) and sync polarities |
 | `tt_um_vgacal_prbs` | pseudo-random pixels seeded per frame: bit-error rate |
 
+## Development
+
+- `make sim` -- run every design's cocotb tests (`uv run make -C
+  designs/<design>/test`).
+- `make check` -- simulate every design, wrap the dump into a vgacap
+  capture stream, reconstruct it with `vgacap-frames`, and diff the result
+  pixel-exactly against `tools/render.py` (`tools/check.py`). Needs a
+  sibling checkout of [mithro/vgacap](https://github.com/mithro/vgacap)
+  built at `<VGACAP>/build`, with its Python package at `<VGACAP>/python`;
+  this defaults to `../vgacap` (i.e. next to this repo) but can be pointed
+  elsewhere with the `VGACAP` environment variable, e.g.
+  `VGACAP=/path/to/vgacap make check`.
+- `make sync-common` -- copy `common/hvsync_generator.v` into every
+  design's `src/` (the Tiny Tapeout hardening flow only reads a design's
+  own `src/`); run this after editing the shared generator.
+- See [`docs/timing.md`](docs/timing.md) for a real VESA sync-phase bug
+  found (and fixed) in the shared VGA timing generator during Task 1.
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE).

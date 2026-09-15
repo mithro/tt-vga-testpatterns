@@ -30,9 +30,10 @@ The project clock must be 25.175 MHz (that is what `clock_hz` requests).
 
 1. Check the monitor reports a 640x480 60 Hz mode.
 2. Check the screen shows an 8-pixel white grid on a dark red background, with a
-   solid white border one pixel in from every edge.
-3. Assert reset: the pattern is unaffected (it has no state besides the sync
-   counters).
+   solid white border at every edge.
+3. Assert reset: the sync counters zero and the picture restarts from the top-left
+   (the monitor briefly loses sync); no per-frame state is lost, since the design
+   has none besides the sync counters themselves.
 
 ## Pinout
 

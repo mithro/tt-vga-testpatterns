@@ -27,7 +27,9 @@ The project clock must be 25.175 MHz (that is what `clock_hz` requests).
 1. Check the monitor reports a 640x480 60 Hz mode.
 2. Check the screen shows 64 vertical bars sweeping smoothly from black on the left
    through every colour to white-ish on the right (repeating the 6-bit colour cycle).
-3. Assert reset: the pattern is unaffected (it has no state besides the sync counters).
+3. Assert reset: the sync counters zero and the picture restarts from the top-left
+   (the monitor briefly loses sync); no per-frame state is lost, since the design
+   has none besides the sync counters themselves.
 
 ## Pinout
 
