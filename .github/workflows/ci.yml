@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: Apache-2.0
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A push to a branch that also has an open PR would otherwise run this twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sim-and-check:
+    name: cocotb sim + pixel-exact check
+    runs-on: ubuntu-latest
+    env:
+      # Where the vgacap checkout lands; tools/check.py reads this.
+      VGACAP: ${{ github.workspace }}/vgacap
+      # mithro/vgacap main as of 2026-09-15. Pinned rather than tracking
+      # main so a vgacap change cannot break this repo's CI without an
+      # explicit, reviewable bump here.
+      VGACAP_COMMIT: b23a551eebebc0fb1d9cb8dbd08bcf7948f98157
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: uv sync
+        run: uv sync
+
+      # Every design's cocotb tests. Does not need vgacap.
+      - name: make sim
+        run: make sim
+
+      - name: Clone and build vgacap
+        run: |
+          git clone --filter=blob:none https://github.com/mithro/vgacap.git "$VGACAP"
+          git -C "$VGACAP" checkout --detach "$VGACAP_COMMIT"
+          cmake -S "$VGACAP" -B "$VGACAP/build"
+          cmake --build "$VGACAP/build" --parallel
+
+      # Simulate each design, reconstruct it through vgacap-frames and diff
+      # the picture against tools/render.py, pixel for pixel. For
+      # tt_um_vgacal_modes this runs all five ui_in sub-cases.
+      - name: make check
+        run: make check
+
+  bitstreams:
+    name: committed bitstreams
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      # The bitstreams themselves are NOT rebuilt here: tools/build.py needs
+      # oss-cad-suite, a multi-gigabyte download that would dominate CI. The
+      # .bin files are committed instead, and this checks they are real
+      # iCE40 bitstreams within the board daemon's upload limit.
+      - name: Check committed bitstreams
+        run: uv run --no-project python tools/check_bitstreams.py
