@@ -10,19 +10,13 @@ rst_n is released -- the same phase tools/dump_uo_out.py samples at)
 corresponds to hpos = k % 800, vpos = (k // 800) % 525: this is the
 "hvsync_generator holds hpos/vpos at 0 through the last reset cycle, then
 increments once per clock" convention documented in common/hvsync_generator.v.
+Colour is plain combinational from hpos/vpos (see project.v), so the colour
+visible at sample index k is the picture's pixel at that same index's
+(hpos, vpos) -- no offset needed.
 
-project.v registers colour one clock behind hpos/vpos (to stay in step with
-the registered hsync/vsync -- see the comment there), so the colour visible
-at sample index k is the picture's pixel at (hpos, vpos) of sample index
-k - 1, not sample index k.
-
-project.v also computes the grid/border pattern from vpos_for_color =
-vpos - 1 (wrapping), one line behind vpos itself: this corrects an
-empirically-observed one-line difference between hvsync_generator's vpos
-and the row vgacap's frame reconstruction crops it into (see the comment in
-project.v). So GRID[row, col] appears at design vpos = row + 1, hpos =
-col + 1 (the vpos_for_color line shift stacks with the one-clock colour
-latency above).
+Some helpers (Sampler, measure_period, pixel6, reset) are duplicated in
+test_bars.py; not yet factored out into a shared module (see the Task 1
+review, finding 8) -- worth doing once a third design needs them.
 """
 from __future__ import annotations
 
@@ -40,18 +34,8 @@ from tools import render  # noqa: E402
 CLK_PERIOD_NS = 40
 H_TOTAL = 800
 V_TOTAL = 525
-H_ACTIVE = 640
-V_ACTIVE = 480
 
 GRID = render.grid()
-
-
-def hsync_bit(uo_out: int) -> int:
-    return (uo_out >> 7) & 1
-
-
-def vsync_bit(uo_out: int) -> int:
-    return (uo_out >> 3) & 1
 
 
 def pixel6(uo_out: int) -> int:
@@ -112,12 +96,6 @@ class Sampler:
         self.index = index
         return int(self.dut.uo_out.value)
 
-    def hpos(self) -> int:
-        return self.index % H_TOTAL
-
-    def vpos(self) -> int:
-        return (self.index // H_TOTAL) % V_TOTAL
-
 
 @cocotb.test()
 async def test_hsync_period(dut):
@@ -143,29 +121,32 @@ async def test_sampled_pixels(dut):
     await reset(dut)
     sampler = Sampler(dut)
 
-    # Line 0 (top border row) of frame 2 (index offset by one full frame so
-    # we are clear of the reset transient): every pixel should be white.
-    # Row 0 of the picture appears at design vpos=1 (vpos_for_color's
-    # one-line shift), and colour lags hpos by one clock (see docstring).
-    base0 = V_TOTAL * H_TOTAL + 1 * H_TOTAL
-    for x in (1, 5, 100):
-        uo = await sampler.at(base0 + x + 1)
-        got = pixel6(uo)
-        want = int(GRID[0, x])
-        assert got == want == 0x3F, f"x={x} y=0: got {got:#08b} want {want:#08b}"
-
-    # A few active-area samples on line 64 of the same frame: grid lines at
-    # x%8==0, the border at x==0/639, and off-grid pixels in between.
-    # Picture row `line` appears at design vpos = line + 1.
+    # Row 64 of frame 2 (index offset by one full frame so we are clear of
+    # the reset transient): 64 % 8 == 0, so the whole row is white.
     line = 64
-    base = V_TOTAL * H_TOTAL + (line + 1) * H_TOTAL
-    for x in (0, 1, 4, 7, 8, 16, 320, 638, 639):
-        uo = await sampler.at(base + x + 1)
-        assert sampler.hpos() == x + 1 and sampler.vpos() == line + 1
+    base = V_TOTAL * H_TOTAL + line * H_TOTAL
+    for x in (1, 5, 100):
+        uo = await sampler.at(base + x)
         got = pixel6(uo)
         want = int(GRID[line, x])
-        assert got == want, f"x={x} y={line}: got {got:#08b} want {want:#08b}"
+        assert got == want == 0x3F, f"x={x} y={line}: got {got:#08b} want {want:#08b}"
 
-    # A blanking-area sample: colour must be forced to 0.
-    uo = await sampler.at(base + 700 + 1)
+    # Rows 1, 3 and 65 (none a multiple of 8) at columns 1, 7, 8, 9: this
+    # exercises the 0x10 background (columns 1, 7, 9) as well as the
+    # x % 8 == 0 grid line (column 8), not just all-white rows.
+    for line in (65, 67, 129):  # picture rows 1, 3, 65 (line = 64 + row)
+        base = V_TOTAL * H_TOTAL + line * H_TOTAL
+        for x in (1, 7, 8, 9):
+            uo = await sampler.at(base + x)
+            got = pixel6(uo)
+            want = int(GRID[line - 64, x])
+            assert got == want, f"x={x} y={line - 64}: got {got:#08b} want {want:#08b}"
+
+    # The right and bottom border, and a blanking-area sample (colour must
+    # be forced to 0 outside the active area).
+    line = 479
+    base = V_TOTAL * H_TOTAL + line * H_TOTAL
+    uo = await sampler.at(base + 639)
+    assert pixel6(uo) == 0x3F, "bottom-right corner (border) must be white"
+    uo = await sampler.at(base + 700)
     assert pixel6(uo) == 0, "colour must be blanked outside the active area"
