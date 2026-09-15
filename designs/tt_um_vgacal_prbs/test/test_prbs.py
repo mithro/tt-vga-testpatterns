@@ -155,6 +155,42 @@ async def test_lfsr_matches_model(dut):
         assert got == want_px, f"x={x} y={y}: got {got:#08b} want {want_px:#08b}"
 
 
+# Independently hand-traced first five low-6-bit LFSR values from seed
+# 0xACE1 (frame 0's seed): x^16+x^14+x^13+x^11+1, bit = s[0]^s[2]^s[3]^s[5],
+# s <= (s>>1)|(bit<<15), the first sample being the unadvanced seed itself.
+# Hand-traced independently of this repo by the Task 2 reviewer (see
+# .superpowers/sdd/2026-09-15-m4-testpatterns/task-2-review.md) and
+# verified against a from-scratch reimplementation of the formula --
+# test_lfsr_matches_model above only proves the DUT and tools/render.py
+# agree with *each other*, so a bug shared by both would still pass it;
+# this pins both against an external oracle instead.
+_HAND_TRACED_LFSR_HEAD = [0x21, 0x30, 0x38, 0x1C, 0x0E]
+
+
+@cocotb.test()
+async def test_lfsr_matches_hand_trace(dut):
+    """The DUT's first five row-8 pixels in frame 0, and tools/render.py's
+    LFSR model for the same seed, both equal the independently hand-traced
+    vector above."""
+    model = render._lfsr_pixels(0xACE1, 5).tolist()
+    assert model == _HAND_TRACED_LFSR_HEAD, (
+        f"tools/render.py's LFSR model does not match the hand-traced "
+        f"vector: got {model!r} want {_HAND_TRACED_LFSR_HEAD!r}"
+    )
+
+    await reset(dut)
+    sampler = Sampler(dut)
+    y = 8
+    got = []
+    for x in range(5):
+        uo = await sampler.at(y * H_TOTAL + x)
+        got.append(pixel6(uo))
+    assert got == _HAND_TRACED_LFSR_HEAD, (
+        f"DUT row 8 pixels 0..4 (frame 0) do not match the hand-traced "
+        f"vector: got {got!r} want {_HAND_TRACED_LFSR_HEAD!r}"
+    )
+
+
 @cocotb.test()
 async def test_lfsr_reseeds_per_frame(dut):
     """The LFSR is reseeded from 0xACE1 ^ frame each frame, not just left
