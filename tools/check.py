@@ -319,7 +319,7 @@ def check_mode_case(
         return False
 
     got_rgb = read_ppm(ppm_path)
-    want_rgb = render.to_rgb(render.modes(ui_in))
+    want_rgb = render.to_rgb(render.modes(ui_in=ui_in))
     if got_rgb.shape != want_rgb.shape:
         print(f"FAIL {label}: shape mismatch: got {got_rgb.shape}, want {want_rgb.shape}")
         return False
