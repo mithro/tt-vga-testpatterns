@@ -39,6 +39,39 @@ def grid(w: int = 640, h: int = 480) -> np.ndarray:
     return np.where(white, 0x3F, 0x10).astype(np.uint8)
 
 
+# tt_um_vgacal_modes' ui_in[1:0] -> (active width, active height). Mode 3 is
+# a repeat of mode 0 (see designs/tt_um_vgacal_modes/docs/info.md).
+MODE_SIZE = {
+    0: (640, 480),  # 640x480@60
+    1: (800, 600),  # 800x600@60
+    2: (720, 400),  # 720x400@70
+    3: (640, 480),  # same as mode 0
+}
+
+
+def modes(mode: int = 0, ui_in: int | None = None) -> np.ndarray:
+    """tt_um_vgacal_modes' picture: the bars pattern scaled to the active
+    width of the mode ui_in[1:0] selects.
+
+    `mode` is ui_in[1:0]; pass the whole `ui_in` byte instead (as
+    tools/check.py does) and the mode is taken from its low two bits. The
+    polarity-inversion bits ui_in[3:2] do not change the picture at all --
+    they move neither the sync pulses nor the active area, only the sense of
+    the pulses -- so this renderer ignores them.
+
+    Bar width is active_width // 64 (10, 12, 11 px), and the colour index is
+    clipped at 63, so the last bar absorbs the remainder (44 px at 800 wide,
+    27 px at 720).
+    """
+    if ui_in is not None:
+        mode = ui_in
+    w, h = MODE_SIZE[mode & 0x3]
+    bar_w = w // 64
+    x = np.arange(w, dtype=np.int32)
+    row = np.minimum(x // bar_w, 63).astype(np.uint8)
+    return np.tile(row, (h, 1))
+
+
 def _counter_strip(frame: int, w: int, rows: int) -> np.ndarray:
     """The frame-counter strip shared by counter() and prbs(): `rows` tall,
     8 blocks of `w // 8` px wide (w must be a multiple of 8), block i shows
