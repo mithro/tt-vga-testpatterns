@@ -9,3 +9,4 @@ __pycache__/
 sim_build/
 results.xml
 *.egg-info/
+.worktrees/
