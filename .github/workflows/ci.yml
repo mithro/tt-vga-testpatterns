@@ -20,7 +20,7 @@ jobs:
       # mithro/vgacap main as of 2026-11-23 (M5 complete). Pinned rather than tracking
       # main so a vgacap change cannot break this repo's CI without an
       # explicit, reviewable bump here.
-      VGACAP_COMMIT: 4b005b2381e1f652f7113a0c744403f03c9e8907
+      VGACAP_COMMIT: eaa5a3af38406d0c72d06fcc7b8996f1f1087a40
     steps:
       - uses: actions/checkout@v5
 
@@ -52,6 +52,12 @@ jobs:
       # tt_um_vgacal_modes this runs all five ui_in sub-cases.
       - name: make check
         run: make check
+
+      # The same designs through frame mode: vgacap's frame_rp2.py on its
+      # emulated RP2350 (ttcap.emu), pins driven by the RTL, at the system
+      # clock ratios the board's SDK uses; every picture pixel-exact.
+      - name: make check-frame
+        run: make check-frame
 
   bitstreams:
     name: committed bitstreams
