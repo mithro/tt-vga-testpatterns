@@ -83,7 +83,9 @@ NEXTPNR_FMAX_RE = re.compile(
 # "Info: 	         ICESTORM_LC:     150/   5280     2%"
 NEXTPNR_UTIL_RE = re.compile(r"^Info:\s+(?P<kind>\w+):\s+(?P<used>\d+)/\s*(?P<total>\d+)")
 # "      74   SB_LUT4" in yosys's final "Printing statistics" block
-YOSYS_CELL_RE = re.compile(r"^\s+(?P<count>\d+)\s+(?P<cell>SB_\w+)\s*$")
+# "   124  SB_CARRY" (older yosys) or "   SB_CARRY   124" (yosys 0.52).
+YOSYS_CELL_RE = re.compile(
+    r"^\s+(?:(?P<count>\d+)\s+(?P<cell>SB_\w+)|(?P<cell2>SB_\w+)\s+(?P<count2>\d+))\s*$")
 
 
 def oss_cad_suite_bin() -> pathlib.Path:
@@ -221,7 +223,7 @@ def parse_yosys_log(path: pathlib.Path) -> dict[str, int]:
         if m:
             # The block prints local counts and then the same totals again
             # for the whole hierarchy; last wins.
-            cells[m["cell"]] = int(m["count"])
+            cells[m["cell"] or m["cell2"]] = int(m["count"] or m["count2"])
     if not cells:
         raise ValueError(f"no SB_* cell counts found in {path}")
     return cells
