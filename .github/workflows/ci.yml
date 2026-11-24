@@ -17,19 +17,19 @@ jobs:
     env:
       # Where the vgacap checkout lands; tools/check.py reads this.
       VGACAP: ${{ github.workspace }}/vgacap
-      # mithro/vgacap main as of 2026-09-15. Pinned rather than tracking
+      # mithro/vgacap main as of 2026-11-23 (M5 complete). Pinned rather than tracking
       # main so a vgacap change cannot break this repo's CI without an
       # explicit, reviewable bump here.
-      VGACAP_COMMIT: b23a551eebebc0fb1d9cb8dbd08bcf7948f98157
+      VGACAP_COMMIT: 4b005b2381e1f652f7113a0c744403f03c9e8907
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Icarus Verilog
         run: |
           sudo apt-get update
           sudo apt-get install -y iverilog
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
@@ -57,8 +57,8 @@ jobs:
     name: committed bitstreams
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
 
       # The bitstreams themselves are NOT rebuilt here: tools/build.py needs
       # oss-cad-suite, a multi-gigabyte download that would dominate CI. The
