@@ -11,7 +11,7 @@ DESIGNS := $(notdir $(wildcard designs/*))
 # GNU Make then prefers over the "sim-%"/"check-%" pattern rules below, so
 # the recipe never runs. Leaving them unlisted still reruns them every time
 # (the target name is never a real file), which is what we want anyway.
-.PHONY: sim check build check-bitstreams sync-common
+.PHONY: sim check check-frame build check-bitstreams sync-common
 
 sim: $(addprefix sim-,$(DESIGNS))
 
@@ -24,6 +24,13 @@ check: $(addprefix check-,$(DESIGNS))
 
 check-%:
 	uv run python tools/check.py $*
+
+# Frame mode (`ttcap capture --mode frame`): vgacap's own board program,
+# run on its emulated RP2350 (ttcap.emu) with the pins driven by the RTL,
+# at the SDK's real clock ratios; every picture must match the reference.
+# Same VGACAP requirement as check, which must include ttcap.emu.
+check-frame:
+	uv run python tools/check_frame.py
 
 # Needs oss-cad-suite (OSS_CAD_SUITE_BIN, default /home/tim/tools/oss-cad-suite/bin)
 # and network access for the pinned tt-support-tools clone; rewrites

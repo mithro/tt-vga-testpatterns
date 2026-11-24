@@ -40,6 +40,13 @@ The capture pipeline they validate lives in
   per frame and sync polarities `vgacap-frames` reports as well as the
   picture; `uv run python tools/check.py tt_um_vgacal_modes --ui-in 2`
   runs just one of them.
+- `make check-frame` -- the same designs through frame mode (`ttcap
+  capture --mode frame`, whole frames at the design's real clock): vgacap's
+  own `frame_rp2.py` board program runs on its emulated RP2350
+  (`ttcap.emu`) with the pins driven by the RTL simulation, at the system
+  clock ratios the board's SDK uses (4 or 2 clocks a pixel), and every
+  picture must be pixel-exact (`tools/check_frame.py`). Same `VGACAP`
+  requirement as `make check`, from a vgacap that has `ttcap.emu`.
 - `make build` -- harden every design for the iCE40UP5K and rewrite
   `bitstreams/` (`tools/build.py`). Needs
   [oss-cad-suite](https://github.com/YosysHQ/oss-cad-suite-build) for
