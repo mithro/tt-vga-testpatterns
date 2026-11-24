@@ -131,7 +131,10 @@ MODE_CASES = {
 FRAME_LINE_RE = re.compile(
     r"^frame (?P<index>\d+): (?P<w>\d+)x(?P<h>\d+) mode=(?P<mode>\S+) "
     r"cpl=(?P<cpl>\d+) lpf=(?P<lpf>\d+) hsync=(?P<hsync>\S+) vsync=(?P<vsync>\S+) "
-    r"partial=(?P<partial>\d+)$"
+    # vgacap 2291264 (2026-09-16) appended `glitches=N`; older builds end at
+    # partial=. Optional so the pin can move either way, and anchored so a
+    # further format change fails loudly instead of matching nothing.
+    r"partial=(?P<partial>\d+)(?: glitches=(?P<glitches>\d+))?$"
 )
 
 # A frame-counter design's check is only meaningful if it reconstructs at
